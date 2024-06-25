@@ -94,29 +94,29 @@ write_cleaned_temp_data <- function() {
   )
 
   season_vector <- character(nrow(combined_temp_data))
-  
+
   # Assign seasons based on the criteria
   season_vector[months(combined_temp_data$Date) %in% c("May", "June", "July", "August", "September", "October")] <- "warm"
   season_vector[months(combined_temp_data$Date) %in% c("December", "January", "February", "March")] <- "cool"
   season_vector[months(combined_temp_data$Date) %in% c("April", "November")] <- "shoulder"
-  
+
   # Add the season column to the dataframe
   combined_temp_data$season <- season_vector
-  
+
   warm_season_start <- as.Date("05-01", format = "%m-%d")
   warm_season_end <- as.Date("10-14", format = "%m-%d")
-  
+
   # Mutate block column
   combined_temp_data <- combined_temp_data %>%
     mutate(
       block = cut(
-        Date, 
-        breaks = seq(warm_season_start, warm_season_end, by = "21 days"), 
+        Date,
+        breaks = seq(warm_season_start, warm_season_end, by = "21 days"),
         labels = FALSE,
         right = FALSE
       )
     )
-  
+
   combined_temp_data <- combined_temp_data %>%
     mutate(
       month_day = format(Date, "%m-%d"),
@@ -130,18 +130,17 @@ write_cleaned_temp_data <- function() {
         # Add more cases if needed
       )
     )
-  
+
   write.csv(combined_temp_data, file.path(TEMPERATURE_DATA_DIR, "combined_temp_data.csv"), row.names = FALSE)
-  
-  warm_data <- combined_temp_data %>%  
+
+  warm_data <- combined_temp_data %>%
     filter(season == "warm")
-  
-  cool_data <- combined_temp_data %>%  
+
+  cool_data <- combined_temp_data %>%
     filter(season == "cool")
-  
-  write.csv(warm_deaths, file.path(TEMPERATURE_DATA_DIR, "data_warm_season.csv"), row.names = FALSE)
-  write.csv(cool_deaths, file.path(TEMPERATURE_DATA_DIR, "data_cool_season.csv"), row.names = FALSE)
-  
+
+  write.csv(warm_data, file.path(TEMPERATURE_DATA_DIR, "data_warm_season.csv"), row.names = FALSE)
+  write.csv(cool_data, file.path(TEMPERATURE_DATA_DIR, "data_cool_season.csv"), row.names = FALSE)
 }
 
 write_cleaned_temp_data()

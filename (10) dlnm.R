@@ -3,6 +3,40 @@ source("(3) paths.R")
 
 load_libraries()
 
+temp_metric_to_color <- list("min" = "blue", "heat_index" = "purple", "mean" = "green", "max" = "red")
+
+
+lag_data <- function(data, temp_metric) {
+  if (temp_metric == "max") {
+    data <- data %>%
+      arrange(county, Date) %>%
+      group_by(county) %>%
+      mutate(
+        lag0 = MaxTemperature,
+        lag1 = lag(MaxTemperature, 1),
+        lag2 = lag(MaxTemperature, 2),
+        lag3 = lag(MaxTemperature, 3),
+        lag4 = lag(MaxTemperature, 4),
+        lag5 = lag(MaxTemperature, 5),
+        lag6 = lag(MaxTemperature, 6)
+      ) %>%
+      ungroup()
+
+    return(data)
+  }
+}
+
+get_centering_temp <- function(df, is_warm) {
+  death_df <- df %>%
+    filter(binary == 1)
+
+  if (is_warm) {
+    return(min(death_df$MaxTemperature))
+  } else {
+    return(max(death_df$MinTemperature))
+  }
+}
+
 # data: a dataframe containing the following columns:
 #  - "Date"
 #  - "county"
@@ -32,27 +66,13 @@ load_libraries()
 #  - "lag6"
 #
 # The rows in this dataframe represent either a death or control date.
-dlnm <- function(data, matched_data_file) {
-   matched_data_blocks <- read.csv(matched_data_file)
-   
-   data <- data %>%
+dlnm <- function(data, temp_metric, is_warm) {
+  data <- data %>%
     mutate(Year = year(Date)) %>%
     filter(year(Date) >= 2000 & Year <= 2022) %>%
     dplyr::select(-Year)
 
-  data <- data %>%
-    arrange(county, Date) %>%
-    group_by(county) %>%
-    mutate(
-      lag0 = MaxTemperature,
-      lag1 = lag(MaxTemperature, 1),
-      lag2 = lag(MaxTemperature, 2),
-      lag3 = lag(MaxTemperature, 3),
-      lag4 = lag(MaxTemperature, 4),
-      lag5 = lag(MaxTemperature, 5),
-      lag6 = lag(MaxTemperature, 6)
-    ) %>%
-    ungroup()
+  data <- lag_data(data, temp_metric)
 
   # creating the exposure histories martrix
   Qdata <- data %>%
@@ -69,8 +89,7 @@ dlnm <- function(data, matched_data_file) {
   mnest <- clogit(binary ~ cbnest + strata(uniqueID), data, method = "exact")
 
   # # predicting specific effect summaries
-  cenvalue <- median(matched_data_blocks$MaxTemperature)
-  range <- range(matched_data_blocks$MaxTemperature)
+  cenvalue <- get_centering_temp(data, is_warm)
   pnest <- crosspred(cbnest, mnest, cen = cenvalue, at = 10:40, cumul = TRUE)
 
   pnest
@@ -79,11 +98,11 @@ dlnm <- function(data, matched_data_file) {
 # matched_data_file is a dataframe containing temperature data for each death date (cases) and controls.
 # This function concatenates the death data with temperature data for all dates to create
 # a dataframe on which we can invoke dlnm().
-dlnm_season <- function(matched_data_file) {
+dlnm_season <- function(matched_data_file, start_year, end_year, temp_metric, is_warm) {
   matched_data_blocks <- read.csv(matched_data_file)
   matched_data_blocks <- matched_data_blocks %>%
     mutate(binary = ifelse(case_control == "case", 1, 0))
-  
+
   combined_temp_data <- read.csv(file.path(TEMPERATURE_DATA_DIR, "combined_temp_data.csv"))
   combined_temp_data$Date <- as.Date(combined_temp_data$Date)
 
@@ -98,68 +117,54 @@ dlnm_season <- function(matched_data_file) {
   final_dataframe <- bind_rows(matched_data_blocks_edited, combined_temp_data %>%
     select(-SatVapPres, -MinVPDeficit, -VaporPressure, -RelHum, -MaxTemperatureF))
 
-  dlnm(final_dataframe, file.path(MISC_DATA_DIR, "warm_season_matched_data_blocks.csv"))
+
+  final_dataframe <- final_dataframe %>%
+    mutate(Year = year(Date)) %>%
+    filter(Year >= start_year & Year <= end_year) %>%
+    dplyr::select(-Year)
+
+  dlnm(final_dataframe, temp_metric = temp_metric, is_warm = is_warm)
 }
-
-warm_season_dlnm <- dlnm_season(file.path(MISC_DATA_DIR, "warm_season_matched_data_blocks.csv"))
-
-
-
-
 
 
 # Work in progress
-# plot_dlnm <- function(pnest) {
-#   temp_values <- data.frame(pnest$predvar)
-#   matfit_df <- data.frame(pnest$matRRfit)
-#   matlow_df <- data.frame(pnest$matRRlow)
-#   mathigh_df <- data.frame(pnest$matRRhigh)
+plot_dlnm <- function(pnest, filename_prefix, temp_metric) {
+  if (is.null(temp_metric_to_color[temp_metric])) {
+    stop(paste0(temp_metric, " is not a valid temperature metric"))
+  }
 
-#   # List to store the plots
-#   plot_list <- list()
+  temp_values <- data.frame(pnest$predvar)
+  matfit_df <- data.frame(pnest$matRRfit)
+  matlow_df <- data.frame(pnest$matRRlow)
+  mathigh_df <- data.frame(pnest$matRRhigh)
 
-#   # Iterate over column indices
-#   for (i in 0:6) {
-#     # Create plot data for the current column index
-#     plot_data <- data.frame(
-#       temp = temp_values,
-#       fit = matfit_df[, paste0("lag", i)], # Values from the current row of matRRfit
-#       low = matlow_df[, paste0("lag", i)], # Values from the current row of matRRlow
-#       high = mathigh_df[, paste0("lag", i)] # Values from the current row of matRRhigh
-#     )
+  plot_color <- as.character(temp_metric_to_color[temp_metric])
 
-#     # Create the plot for the current column index
-#     plot_list[[paste0("OMTp", i)]] <- ggplot(plot_data, aes(x = pnest.predvar)) +
-#       geom_line(aes(y = fit), color = "red") +
-#       geom_ribbon(aes(ymin = low, ymax = high), fill = "red", alpha = 0.3) +
-#       labs(x = NULL, y = NULL) +
-#       geom_hline(yintercept = 1, linetype = "dashed", color = "black") + # Add horizontal line
-#       scale_x_continuous(breaks = seq(10, 40, by = 5)) +
-#       coord_cartesian(ylim = c(0.5, 1.75)) + # Set y-axis limits
-#       theme_minimal()
-#   }
+  for (i in 0:6) {
+    # Create plot data for the current column index
+    plot_data <- data.frame(
+      temp = temp_values,
+      fit = matfit_df[, paste0("lag", i)], # Values from the current row of matRRfit
+      low = matlow_df[, paste0("lag", i)], # Values from the current row of matRRlow
+      high = mathigh_df[, paste0("lag", i)] # Values from the current row of matRRhigh
+    )
 
+    # Create the plot for the current column index
+    ggplot(plot_data, aes(x = pnest.predvar)) +
+      geom_line(aes(y = fit), color = plot_color) +
+      geom_ribbon(aes(ymin = low, ymax = high), fill = plot_color, alpha = 0.3) +
+      labs(x = NULL, y = NULL) +
+      geom_hline(yintercept = 1, linetype = "dashed", color = "black") + # Add horizontal line
+      scale_x_continuous(breaks = seq(10, 40, by = 5)) +
+      coord_cartesian(ylim = c(0.5, 1.75)) + # Set y-axis limits
+      theme_minimal()
 
-#   # Combine plots
-#   combined_plot <- plot_grid(plotlist = plot_list, nrow = 3) # Combine plots in a grid layout
-
-#   OMTp0 <- plot_list$OMTp0
-#   OMTp1 <- plot_list$OMTp1
-#   OMTp2 <- plot_list$OMTp2
-#   OMTp3 <- plot_list$OMTp3
-#   OMTp4 <- plot_list$OMTp4
-#   OMTp5 <- plot_list$OMTp5
-#   OMTp6 <- plot_list$OMTp6
+    filename <- paste0(filename_prefix, "_", temp_metric, "_", i, ".png")
+    ggsave(filename = file.path(PLOT_DIR, filename))
+  }
+}
 
 
 
-#   library(cowplot) # Load the cowplot package
-
-#   # Combine the plots
-#   # combined_plot <- plot_grid(plotlist = plot_list, align = "hv", ncol = 3)
-
-#   # Display the combined plot
-
-#   combined_plot <- (plot_list$OMTp0 / plot_list$OMTp1 / plot_list$OMTp2) +
-#     plot_layout(guides = "collect")
-# }
+warm_season_dlnm_overall <- dlnm_season(file.path(MISC_DATA_DIR, "warm_season_matched_data_blocks.csv"), 2000, 2022, temp_metric = "max", is_warm = TRUE)
+plot_dlnm(warm_season_dlnm_overall, filename_prefix = "overall", temp_metric = "max")

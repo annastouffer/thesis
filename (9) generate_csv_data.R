@@ -5,6 +5,11 @@ source("(5) clean_temperature_data.R")
 source("(7) extract_SVI.R")
 source("(8) match_referent_days.R")
 
+print("writing temperature data")
 write_cleaned_temp_data()
+
+print("extracting evi data")
 extract_svi_data()
-match_referent_days()
+
+print("matching referent days")
+# match_referent_days()
