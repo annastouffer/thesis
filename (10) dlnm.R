@@ -1,40 +1,94 @@
 source("(2) load_libraries.R")
 source("(3) paths.R")
 
+# To run this file:
+# in terminal, run "Rscript '(10) dlnm.R'
+
 load_libraries()
 
 temp_metric_to_color <- list("min" = "blue", "heat_index" = "purple", "mean" = "green", "max" = "red")
 
-
-lag_data <- function(data, temp_metric) {
+get_temp_metric_col <- function(df, temp_metric) {
   if (temp_metric == "max") {
-    data <- data %>%
-      arrange(county, Date) %>%
-      group_by(county) %>%
-      mutate(
-        lag0 = MaxTemperature,
-        lag1 = lag(MaxTemperature, 1),
-        lag2 = lag(MaxTemperature, 2),
-        lag3 = lag(MaxTemperature, 3),
-        lag4 = lag(MaxTemperature, 4),
-        lag5 = lag(MaxTemperature, 5),
-        lag6 = lag(MaxTemperature, 6)
-      ) %>%
-      ungroup()
-
-    return(data)
+    return(df$MaxTemperature)
+  } else if (temp_metric == "min") {
+    return(df$MinTemperature)
+  } else if (temp_metric == "heat_index") {
+    return(df$HeatIndex)
   }
 }
 
-get_centering_temp <- function(df, is_warm) {
+get_centering_temp <- function(df, temp_metric) {
   death_df <- df %>%
     filter(binary == 1)
 
-  if (is_warm) {
-    return(min(death_df$MaxTemperature))
-  } else {
-    return(max(death_df$MinTemperature))
+  if (temp_metric == "max") {
+    return(mean(death_df$MaxTemperature))
+  } else if (temp_metric == "min") {
+    return(mean(death_df$MinTemperature))
+  } else if (temp_metric == "heat_index") {
+    return(mean(death_df$HeatIndex))
   }
+}
+
+get_range <- function(df, temp_metric) {
+  death_df <- df %>%
+    filter(binary == 1)
+  
+  if (temp_metric == "max") {
+    return(round(range(death_df$MaxTemperature), 0))
+  } else if (temp_metric == "min") {
+    return(round(range(death_df$MinTemperature), 0))
+  } else if (temp_metric == "heat_index") {
+    return(round(range(death_df$HeatIndex), 0))
+  }
+
+}
+
+make_lag_col <- function(df, col_name, N, temp_metric) {
+  if (temp_metric == "max") {
+    return(
+      df %>%
+      group_by(county) %>%
+      mutate(
+        PrevDayIndex = match(Date - N, Date),  # Find index of previous day's date
+        {{ col_name }} := ifelse(is.na(PrevDayIndex), NA, MaxTemperature[PrevDayIndex])  # Get previous day's temperature
+      ) %>%
+      select(-PrevDayIndex) %>%
+      ungroup()
+    )
+  } else if (temp_metric == "min") {
+    return(
+      df %>%
+        group_by(county) %>%
+        mutate(
+          PrevDayIndex = match(Date - N, Date),  # Find index of previous day's date
+          {{ col_name }} := ifelse(is.na(PrevDayIndex), NA, MinTemperature[PrevDayIndex])  # Get previous day's temperature
+        ) %>%
+        select(-PrevDayIndex) %>%
+        ungroup()
+    )
+  } else if (temp_metric == "heat_index") {
+    return(
+      df %>%
+        group_by(county) %>%
+        mutate(
+          PrevDayIndex = match(Date - N, Date),  # Find index of previous day's date
+          {{ col_name }} := ifelse(is.na(PrevDayIndex), NA, HeatIndex[PrevDayIndex])  # Get previous day's temperature
+        ) %>%
+        select(-PrevDayIndex) %>%
+        ungroup()
+    )
+  }
+  
+  df %>%
+    group_by(county) %>%
+    mutate(
+      PrevDayIndex = match(Date - N, Date),  # Find index of previous day's date
+      {{ col_name }} := ifelse(is.na(PrevDayIndex), NA, MaxTemperature[PrevDayIndex])  # Get previous day's temperature
+    ) %>%
+    select(-PrevDayIndex) %>%
+    ungroup()
 }
 
 # data: a dataframe containing the following columns:
@@ -66,39 +120,56 @@ get_centering_temp <- function(df, is_warm) {
 #  - "lag6"
 #
 # The rows in this dataframe represent either a death or control date.
-dlnm <- function(data, temp_metric, is_warm) {
+dlnm <- function(data, temp_metric) {
+  
   data <- data %>%
     mutate(Year = year(Date)) %>%
     filter(year(Date) >= 2000 & Year <= 2022) %>%
     dplyr::select(-Year)
-
-  data <- lag_data(data, temp_metric)
-
+  
+  data$lag0 <- data$MaxTemperature
+  data <- make_lag_col(data, lag1, 1, temp_metric)
+  data <- make_lag_col(data, lag2, 2, temp_metric)
+  data <- make_lag_col(data, lag3, 3, temp_metric)
+  data <- make_lag_col(data, lag4, 4, temp_metric)
+  data <- make_lag_col(data, lag5, 5, temp_metric)
+  data <- make_lag_col(data, lag6, 6, temp_metric)
+  
   # creating the exposure histories martrix
   Qdata <- data %>%
+    filter(!is.na(uniqueID)) %>%
     dplyr::select(lag0:lag6)
-
-  range <- range(data$MaxTemperature, na.rm = T)
-  nknots <- 4
-  nlagknots <- 2
-  ktemp <- range[1] + (range[2] - range[1]) / (nknots + 1) * 1:nknots
-  klag <- exp((log(6)) / (nlagknots + 2) * 1:nlagknots)
-  cbnest <- crossbasis(Qdata, lag = 6, argvar = list("ns", df = 3), arglag = list(fun = "ns", knots = klag), compare = "median")
-
+  
+  data <- data %>%
+    filter(!is.na(uniqueID)) 
+  
+  varfun = "bs"
+  varper <- c(.5)
+  lag = 6
+  lagnk <- 2
+  
+  temp_metric_col = get_temp_metric_col(data, temp_metric)
+  
+  argvar <- list(fun=varfun, knots=quantile(temp_metric_col, c(.5), na.rm = T))
+  cb <- crossbasis(Qdata,lag=lag,argvar=argvar,
+                   arglag=list(knots=logknots(lag,lagnk)))
+  cbnest = cb
+  
   # # regression model
   mnest <- clogit(binary ~ cbnest + strata(uniqueID), data, method = "exact")
-
+  
   # # predicting specific effect summaries
-  cenvalue <- get_centering_temp(data, is_warm)
-  pnest <- crosspred(cbnest, mnest, cen = cenvalue, at = 10:40, cumul = TRUE)
-
+  cenvalue = get_centering_temp(data, temp_metric)
+  range = get_range(data, temp_metric)
+  range = seq(range[1], range[2])
+  pnest <- crosspred(cbnest, mnest, cen=cenvalue, at=range, cumul=TRUE)
   pnest
 }
 
 # matched_data_file is a dataframe containing temperature data for each death date (cases) and controls.
 # This function concatenates the death data with temperature data for all dates to create
 # a dataframe on which we can invoke dlnm().
-dlnm_season <- function(matched_data_file, start_year, end_year, temp_metric, is_warm) {
+dlnm_season <- function(matched_data_file, start_year, end_year, temp_metric) {
   matched_data_blocks <- read.csv(matched_data_file)
   matched_data_blocks <- matched_data_blocks %>%
     mutate(binary = ifelse(case_control == "case", 1, 0))
@@ -123,7 +194,7 @@ dlnm_season <- function(matched_data_file, start_year, end_year, temp_metric, is
     filter(Year >= start_year & Year <= end_year) %>%
     dplyr::select(-Year)
 
-  dlnm(final_dataframe, temp_metric = temp_metric, is_warm = is_warm)
+  dlnm(final_dataframe, temp_metric = temp_metric)
 }
 
 
@@ -155,7 +226,7 @@ plot_dlnm <- function(pnest, filename_prefix, temp_metric) {
       geom_ribbon(aes(ymin = low, ymax = high), fill = plot_color, alpha = 0.3) +
       labs(x = NULL, y = NULL) +
       geom_hline(yintercept = 1, linetype = "dashed", color = "black") + # Add horizontal line
-      scale_x_continuous(breaks = seq(10, 40, by = 5)) +
+      scale_x_continuous(breaks = seq(-20, 20, by = 5)) +
       coord_cartesian(ylim = c(0.5, 1.75)) + # Set y-axis limits
       theme_minimal()
 
@@ -164,7 +235,7 @@ plot_dlnm <- function(pnest, filename_prefix, temp_metric) {
   }
 }
 
+temp_metric = "min"
+warm_season_dlnm_overall <- dlnm_season(file.path(MISC_DATA_DIR, "cool_season_matched_data_blocks_cocaine.csv"), 2000, 2022, temp_metric = temp_metric)
+plot_dlnm(warm_season_dlnm_overall, filename_prefix = "cocaine_overall", temp_metric = temp_metric)
 
-
-warm_season_dlnm_overall <- dlnm_season(file.path(MISC_DATA_DIR, "warm_season_matched_data_blocks.csv"), 2000, 2022, temp_metric = "max", is_warm = TRUE)
-plot_dlnm(warm_season_dlnm_overall, filename_prefix = "overall", temp_metric = "max")
